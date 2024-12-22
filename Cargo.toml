@@ -1,0 +1,12 @@
+[package]
+name = "remux"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.94"
+eframe = "0.30.0"
+nix = "0.29.0"
+termwiz = "0.22.0"
+tokio = { version = "1", features = ["full"] }
+vte = "0.13.0"
