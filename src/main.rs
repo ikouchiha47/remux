@@ -1,42 +1,65 @@
-mod veeteee;
+mod renderer;
 
-use eframe::egui::{self, TextBuffer};
+use eframe::egui;
+use renderer::WezTerminalPane;
+use std::error::Error as StdError;
 use std::sync::{Arc, Mutex};
-use veeteee::TerminalPane;
+use termwiz::Error;
 
-fn main() {
-    let mut pane = TerminalPane::new();
-    pane.append_raw("\033[32;44mColored Text\033[0m\n");
-    pane.append_raw("\033[10;20HMove Cursor\n");
-    pane.append_raw("\033[2JClear Screen\n");
+use tokio::time::{sleep, Duration};
 
-    println!("{}", pane.read());
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn StdError>> {
+    let pane = Arc::new(Mutex::new(WezTerminalPane::new(80, 24)?));
 
+    // Test: Spawn a background task that appends ANSI text every 2 seconds
+    {
+        let pane_for_task = Arc::clone(&pane);
+        tokio::spawn(async move {
+            loop {
+                {
+                    let mut locked = pane_for_task.lock().unwrap();
+                    // Red foreground on black background
+                    locked.append_raw("\u{1b}[31;40mHello from Tokio!\u{1b}[0m\n");
+                }
+                sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+
+    // Print the initial contents of the pane (if any)
+    println!("{}", pane.lock().unwrap().read());
+
+    // Now launch eframe. We pass our Arc<Mutex<WezTerminalPane>> into the app constructor.
     let native_options = eframe::NativeOptions::default();
     let _ = eframe::run_native(
-        "Remux",
+        "Remux with async Termwiz",
         native_options,
-        Box::new(|cc| Ok(Box::new(RemuxApp::new(cc)))),
+        Box::new(|cc| {
+            let app = RemuxApp::new_with_pane(cc, pane.clone())
+                .expect("should have successfully opened a pane");
+            Ok(Box::new(app))
+        }),
     );
+
+    Ok(())
 }
 
-#[derive(Default)]
 struct RemuxApp {
-    pane: Arc<Mutex<TerminalPane>>, // Shared terminal pane
+    pane: Arc<Mutex<WezTerminalPane>>, // Shared terminal pane
     input: String,
 }
 
 impl RemuxApp {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Customize egui here with cc.egui_ctx.set_fonts and cc.egui_ctx.set_visuals.
-        // Restore app state using cc.storage (requires the "persistence" feature).
-        // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
-        // for e.g. egui::PaintCallback.
-        Self::default();
-        Self {
-            pane: Arc::new(Mutex::new(TerminalPane::new())),
+    /// A new constructor that re-uses an existing Arc<Mutex<WezTerminalPane>>
+    fn new_with_pane(
+        _cc: &eframe::CreationContext<'_>,
+        pane: Arc<Mutex<WezTerminalPane>>,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            pane,
             input: String::new(),
-        }
+        })
     }
 
     fn simulate_output(&self, raw_output: &str) {
@@ -46,13 +69,13 @@ impl RemuxApp {
     }
 
     fn process_input(&mut self) {
-        self.simulate_output(&format!("Command : {}\n", self.input));
+        self.simulate_output(&self.input);
         self.input.clear();
     }
 }
 
 impl eframe::App for RemuxApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Top Panel, title bar
         egui::TopBottomPanel::top("Title Bar").show(ctx, |ui| {
             ui.label(egui::RichText::new("Terminal Emulator - [tmux session]").strong());
@@ -61,24 +84,31 @@ impl eframe::App for RemuxApp {
         // Center Panel, for main display
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
+                // Lock the pane and read its text
                 if let Ok(pane) = self.pane.lock() {
-                    ui.label(pane.read());
+                    let lines = pane.read_colored_lines();
+
+                    for line_segments in lines {
+                        ui.horizontal_wrapped(|ui| {
+                            for (text_chunk, fg_color) in line_segments {
+                                // println!("{:?} {:?}", text_chunk, fg_color);
+                                let text = egui::RichText::new(text_chunk).color(fg_color);
+                                ui.label(text);
+                            }
+                        });
+                    }
                 }
             });
         });
 
         // Status Bar + Command Input
         egui::TopBottomPanel::bottom("Status Bar").show(ctx, |ui| {
-            // Thin bar styling for the Vim-like status line
             let rect = ui.available_rect_before_wrap();
-            ui.painter().rect_filled(
-                rect,
-                0.0,                                 // No corner rounding
-                egui::Color32::from_rgb(30, 30, 30), // Dark background
-            );
+            ui.painter()
+                .rect_filled(rect, 0.0, egui::Color32::from_rgb(30, 30, 30));
 
             ui.horizontal(|ui| {
-                ui.add_space(rect.width() - 120.0); // Push the line/column to the right
+                ui.add_space(rect.width() - 120.0); // push to the right
 
                 if let Ok(pane) = self.pane.lock() {
                     ui.label(
@@ -92,13 +122,12 @@ impl eframe::App for RemuxApp {
                 }
             });
 
-            ui.separator(); // Line separating status bar and input
+            ui.separator(); // line separating status bar and input
 
-            // Input section
-            let input_rect = ui.available_rect_before_wrap(); // Get the available space
+            let input_rect = ui.available_rect_before_wrap();
             let input_height = 20.0;
 
-            // Draw the custom background for the input box
+            // custom background for the input
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(
                     input_rect.min,
@@ -108,7 +137,6 @@ impl eframe::App for RemuxApp {
                 egui::Color32::from_gray(20),
             );
 
-            // Render the single-line input
             ui.allocate_ui_with_layout(
                 egui::vec2(input_rect.width(), input_height),
                 egui::Layout::top_down(egui::Align::Min),
@@ -120,25 +148,14 @@ impl eframe::App for RemuxApp {
                             .frame(false),
                     );
 
-                    // Handle input processing when Enter is pressed
                     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         self.process_input();
                     }
                 },
             );
-
-            ui.add_space(2.0);
-            // ui.horizontal(|ui| {
-            //     ui.label(egui::RichText::new(": ").monospace());
-            //     let response = ui.text_edit_singleline(&mut self.input);
-            //     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            //         self.simulate_output(&format!("Command : {}\n", self.input));
-            //         self.input.clear();
-            //     }
-            // });
         });
 
-        // Request repaint (ensures smooth updates)
+        // Request repaint for continuous updates
         ctx.request_repaint();
     }
 }
