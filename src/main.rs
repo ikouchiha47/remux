@@ -6,26 +6,14 @@ use std::error::Error as StdError;
 use std::sync::{Arc, Mutex};
 use termwiz::Error;
 
-use tokio::time::{sleep, Duration};
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn StdError>> {
     let pane = Arc::new(Mutex::new(WezTerminalPane::new(80, 24)?));
 
-    // Test: Spawn a background task that appends ANSI text every 2 seconds
-    {
-        let pane_for_task = Arc::clone(&pane);
-        tokio::spawn(async move {
-            loop {
-                {
-                    let mut locked = pane_for_task.lock().unwrap();
-                    // Red foreground on black background
-                    locked.append_raw("\u{1b}[31;40mHello from Tokio!\u{1b}[0m\n");
-                }
-                sleep(Duration::from_secs(2)).await;
-            }
-        });
-    }
+    let pane_for_task = Arc::clone(&pane);
+    let mut locked = pane_for_task.lock().unwrap();
+    // Red foreground on black background
+    locked.append_raw("\u{1b}[31;40mHello from Tokio!\u{1b}[0m\n")?;
 
     // Print the initial contents of the pane (if any)
     println!("{}", pane.lock().unwrap().read());

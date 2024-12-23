@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::usize;
 
-use termwiz::cell::{Cell, CellAttributes, Line};
+use termwiz::cell::{Cell, CellAttributes};
 use termwiz::color::{ColorAttribute, SrgbaTuple};
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode, CSI};
@@ -48,6 +48,9 @@ impl WezTerminalPane {
             if ignoring {
                 return;
             }
+
+            println!("{:?}", action);
+
             match action {
                 Action::Print(c) => {
                     buf.push(c);
@@ -105,7 +108,7 @@ impl WezTerminalPane {
 
         let screen_lines = self.surface.screen_lines(); // returns Vec<Cow<'_, Line>>
         for line_cow in screen_lines {
-            let mut line = line_cow.into_owned(); // convert Cow<Line> → &Line
+            let mut line = line_cow.into_owned(); // convert Cow<Lzine> → &Line
             let mut segments = Vec::new();
 
             // We'll accumulate text for cells with the same color
@@ -137,9 +140,9 @@ impl WezTerminalPane {
             }
 
             out_lines.push(segments);
-            println!("");
         }
 
+        println!("{:?}", out_lines);
         out_lines
     }
 }
