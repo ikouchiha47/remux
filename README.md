@@ -40,3 +40,11 @@ Tmux internally does the same sort of pty management but for multiple shells/pan
 -Tmux composes the text from multiple shells/panes into a single layout and outputs that to your real terminal—or sends structured messages in `Control Mode`.
 
 So, talk to tmux (via tmux -CC or by sending it commands). Parse the commands/events sent by tmux and draw the ui.
+
+3. Grapheme, Unicode Segmentation
+
+https://unicode.org/reports/tr29/
+
+- Emojis: Graphemes like 😊 are double-width and must be followed by a blank cell to render correctly.
+- CJK Characters: Characters in Chinese, Japanese, and Korean scripts often span two columns.
+- Special Formatting: Some sequences may result in a grapheme width greater than 1 (e.g., combining characters).

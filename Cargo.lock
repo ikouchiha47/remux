@@ -2692,6 +2692,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "eframe",
+ "finl_unicode",
  "nix 0.29.0",
  "termwiz",
  "tokio",

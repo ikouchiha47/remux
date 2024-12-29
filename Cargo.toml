@@ -6,7 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.94"
 eframe = "0.30.0"
-nix = "0.29.0"
+finl_unicode = "1.3.0"
+nix = { version = "0.29.0",features = ["term", "process", "fs"]  }
 termwiz = "0.22.0"
 tokio = { version = "1", features = ["full"] }
 vte = "0.13.0"
