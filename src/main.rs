@@ -1,4 +1,3 @@
-mod drawer;
 use eframe::egui;
 use nix::pty::{forkpty, ForkptyResult, Winsize};
 use nix::unistd::execvp;
@@ -28,7 +27,8 @@ impl RemuxApp {
         let (stdin, stdout) = spawn_pty().expect("Failed to start tmux session");
 
         let flags = nix::fcntl::fcntl(stdout.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL).unwrap();
-        let mut flags = nix::fcntl::OFlag::from_bits(flags).unwrap();
+        let mut flags =
+            nix::fcntl::OFlag::from_bits(flags & nix::fcntl::OFlag::O_ACCMODE.bits()).unwrap();
 
         flags.set(nix::fcntl::OFlag::O_NONBLOCK, true);
         nix::fcntl::fcntl(stdout.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(flags)).unwrap();
@@ -60,7 +60,8 @@ impl RemuxApp {
     }
 
     fn send_tmux_command(&mut self, command: &str) {
-        if let Err(e) = self.stdin.write_all(format!("{}\n", command).as_bytes()) {
+        println!("command {:?}", command);
+        if let Err(e) = self.stdin.write_all(format!("%{}\n", command).as_bytes()) {
             eprintln!("Failed to send command to tmux: {}", e);
         }
     }
@@ -83,7 +84,13 @@ fn spawn_pty() -> io::Result<(File, OwnedFd)> {
         }
         ForkptyResult::Child => {
             let tmux = CString::new("tmux").unwrap();
-            let args = vec![CString::new("-C").unwrap()];
+            let args = vec![
+                CString::new("-CC").unwrap(),
+                CString::new("new-session").unwrap(),
+                CString::new("-A").unwrap(),
+                CString::new("-s").unwrap(),
+                CString::new("remux").unwrap(),
+            ];
             execvp(&tmux, &args).unwrap();
             unreachable!()
         }
