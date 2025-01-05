@@ -1,5 +1,5 @@
 run:
-	cargo run -- --cache cache
+	cargo run 
 
 build:
 	cargo build

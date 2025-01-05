@@ -1,0 +1,276 @@
+use core::f32;
+use eframe::egui::debug_text::print;
+use nix::pty::{forkpty, ForkptyResult, Winsize};
+use nix::unistd::execvp;
+use std::ffi::CString;
+use std::fs::File;
+use std::io::{self, Write};
+use std::os::fd::AsRawFd;
+use std::os::fd::{FromRawFd, OwnedFd};
+
+// mod sessionmanager;
+mod temux;
+use eframe::{egui, epaint};
+
+use std::sync::{Arc, Mutex};
+use temux::TemuxClient;
+
+struct RemuxApp {
+    input: Arc<Mutex<Vec<u8>>>,
+    termbuff: Arc<Mutex<Vec<u8>>>,
+    client: TemuxClient,
+    stdin: Option<File>,
+    stdout: Option<OwnedFd>,
+}
+
+impl RemuxApp {
+    pub fn new(_cc: &eframe::CreationContext<'_>, _width: usize, _height: usize) -> Self {
+        let client = TemuxClient::new("session0");
+        let (stdin, stdout) = spawn_pty("bash").expect("should not have failed to open");
+
+        let flags = nix::fcntl::fcntl(stdout.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL).unwrap();
+        let mut flags =
+            nix::fcntl::OFlag::from_bits(flags & nix::fcntl::OFlag::O_ACCMODE.bits()).unwrap();
+
+        flags.set(nix::fcntl::OFlag::O_NONBLOCK, true);
+        nix::fcntl::fcntl(stdout.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(flags)).unwrap();
+
+        Self {
+            input: Arc::new(Mutex::new(Vec::new())),
+            termbuff: Arc::new(Mutex::new(Vec::new())),
+            client,
+            stdin: Some(stdin),
+            stdout: Some(stdout),
+        }
+    }
+}
+
+impl Drop for RemuxApp {
+    fn drop(&mut self) {
+        if let Some(stdin) = self.stdin.take() {
+            drop(stdin);
+        }
+
+        if let Some(stdout) = self.stdout.take() {
+            drop(stdout);
+        }
+
+        // Other Clean up
+    }
+}
+
+impl eframe::App for RemuxApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let mut buffer = vec![0; 1024];
+
+        // Read from stdout
+        if let Ok(n) = nix::unistd::read(self.stdout.as_mut().unwrap().as_raw_fd(), &mut buffer) {
+            if n > 0 {
+                self.termbuff
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&buffer[..n]);
+            }
+        }
+
+        egui::TopBottomPanel::top("Title Bar").show(ctx, |ui| {
+            ui.label(egui::RichText::new("Terminal Emulator - [tmux session]").strong());
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .max_height(ui.available_height())
+                .show(ui, |ui| {
+                    let terminal_buffer = self.termbuff.lock().unwrap();
+                    let mut terminal_output = String::from_utf8_lossy(&terminal_buffer);
+                    //
+                    // let font_id = ui
+                    //     .style()
+                    //     .text_styles
+                    //     .get(&egui::TextStyle::Monospace)
+                    //     .expect("Monospace style not found")
+                    //     .clone();
+                    //
+                    // let row_height = ui.fonts(|fonts| fonts.row_height(&font_id));
+                    // let available_height = ui.available_height();
+                    //
+                    // // Calculate the number of rows that fit in the available height
+                    // let num_rows = (available_height / row_height).floor() as usize;
+
+                    // Display the terminal content
+                    // ui.label(terminal_output.clone());
+
+                    let response = ui.add_sized(
+                        ui.available_size(),
+                        egui::TextEdit::multiline(&mut terminal_output)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .frame(false),
+                    );
+
+                    for event in ctx.input(|i| i.raw.events.clone()) {
+                        let egui::Event::Text(text) = event else {
+                            continue;
+                        };
+
+                        println!("text {:?}", text);
+                        self.input.lock().unwrap().extend(text.into_bytes());
+                    }
+
+                    let mut input_buffer = self.input.lock().unwrap();
+
+                    if response.lost_focus() || ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        println!("input {:?}", input_buffer);
+                        if let Some(pos) = input_buffer.iter().rposition(|&b| b == b'\n') {
+                            let command = &buffer[pos + 1..];
+                            println!("cc {:?}", String::from_utf8_lossy(&input_buffer));
+
+                            if let Some(stdin) = &mut self.stdin {
+                                println!("command {:?}", command);
+                                stdin.write_all(command).unwrap();
+                                stdin.write_all(b"\n").unwrap();
+                            }
+
+                            input_buffer.clear();
+                        }
+                    }
+                });
+
+            ui.separator();
+
+            // let mut terminal_input = String::new();
+            // let response = ui.add(
+            //     egui::TextEdit::multiline(&mut terminal_input)
+            //         .font(egui::TextStyle::Monospace)
+            //         .lock_focus(false)
+            //         .desired_width(f32::INFINITY)
+            //         // .desired_rows(1)
+            //         .frame(false),
+            // );
+            //
+            // if response.lost_focus() || ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            //     let command = terminal_input.trim(); // Get the typed command
+            //     if !command.is_empty() {
+            //         self.stdin.write_all(command.as_bytes()).unwrap();
+            //         self.stdin.write_all(b"\n").unwrap();
+            //
+            //         terminal_input.clear();
+            //     }
+            // }
+
+            // Separate panel for tmux commands
+            egui::CollapsingHeader::new("Temux Commands").show(ui, |_ui| {
+                let client = self.client.clone();
+
+                tokio::spawn(async move {
+                    if let Err(err) = client.create_session("new-session").await {
+                        eprintln!("Failed to create session: {:?}", err);
+                    }
+                });
+            });
+        });
+
+        ctx.request_repaint();
+    }
+}
+
+fn spawn_pty(shell: &str) -> io::Result<(File, OwnedFd)> {
+    let winsize = Winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+
+    let fork_result = unsafe { forkpty(Some(&winsize), None).unwrap() };
+
+    match fork_result {
+        ForkptyResult::Parent { master, .. } => {
+            let reader = unsafe { std::fs::File::from_raw_fd(master.as_raw_fd()) };
+            Ok((reader, master))
+        }
+        ForkptyResult::Child => {
+            let shell = CString::new(shell).unwrap();
+            let args = vec![CString::new("-i").unwrap()];
+
+            execvp(&shell, &args).unwrap();
+            unreachable!()
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let viewport = egui::ViewportBuilder {
+        inner_size: Some(epaint::Vec2 { x: 800.0, y: 600.0 }),
+        ..Default::default()
+    };
+    let native_options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+    let _ = eframe::run_native(
+        "Remux with async Termwiz",
+        native_options,
+        Box::new(|cc| {
+            let app = RemuxApp::new(cc, 800, 600);
+            Ok(Box::new(app))
+        }),
+    );
+}
+
+// use drawer::draw_surface;
+// use termwiz::color::ColorAttribute;
+// use termwiz::surface::{Change, Surface};
+// use eframe::egui::{Color32, TextEdit, Vec2};
+
+// egui::CentralPanel::default().show(ctx, |ui| {
+//     egui::ScrollArea::vertical().show(ui, |ui| {
+//         ui.text_edit_multiline(&mut self.output);
+//     });
+//
+//     if ui.text_edit_singleline(&mut self.input).lost_focus()
+//         && ctx.input(|i| i.key_pressed(egui::Key::Enter))
+//     {
+//         let command = self.input.clone();
+//         println!("changed {:?}", command);
+//         self.input.clear();
+//         self.stdin
+//             .write_all(format!("{}\n", command).as_bytes())
+//             .expect("Failed to send command to tmux");
+//     }
+// });
+
+// egui::TopBottomPanel::bottom("Input Panel").show(ctx, |ui| {
+//     let rect = ui.available_rect_before_wrap();
+//     ui.painter()
+//         .rect_filled(rect, 0.0, Color32::from_rgb(30, 30, 30));
+//
+//     ui.set_min_height(40.0);
+//     ui.separator();
+
+// let input_rect = ui.available_rect_before_wrap();
+// let input_height = 20.0;
+
+// ui.allocate_ui_with_layout(
+//     Vec2::new(input_rect.width(), input_height),
+//     egui::Layout::top_down(egui::Align::Min),
+//     |ui| {
+//         let response = ui.add_sized(
+//             Vec2::new(input_rect.width(), input_height),
+//             TextEdit::singleline(&mut self.input)
+//                 .hint_text(egui::RichText::new(": ").monospace())
+//                 .text_color(Color32::GREEN)
+//                 .frame(true),
+//         );
+//
+//         if response.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+//             self.process_input();
+//         }
+//     },
+// );
+//
+// });
+
+// ctx.request_repaint();
